@@ -1,14 +1,16 @@
-import java.io.File
+import kotlinx.coroutines.*
 import java.net.ServerSocket
 import java.net.Socket
-import java.sql.*
-import kotlin.concurrent.thread
+
 
 class Server(val port : Int=5804) {
 
     private val sSocket: ServerSocket
     private val clients= mutableListOf<Client>()
+    private val availableClients= mutableListOf<Client>()
+    private var resultMatrix=mutableListOf<ArrayList<Float>>()
     private var stop=false
+    private var calculating=false
 
     /** Вложенный класс клиентов, чтобы сервер хранил 'копии' подключенных клиентов
      * и взаимодействовал с подключенными клиентами
@@ -20,16 +22,55 @@ class Server(val port : Int=5804) {
         /**
          * Обработка информации с подключенными клиентами
          */
-        fun startDialog(){
+        suspend fun startDialog(){
             sock=SocketIO(socket).apply{
                 addSocketClosedListener {
                     clients.remove(this@Client)
                 }
+
                 addDataListener{
-                    clients.forEach{ client ->
-                        if(client!=this@Client) client.sock?.sendData(this@Client.toString()+" :"+it)
-                        else{
-                            client.sock?.sendData("You said: "+it)
+                    val list = it.split(";")
+
+                    //Проверка
+                    //1;1;[3.0, 5.0, 3.0];[6.0, 8.0, 9.0];result;iter
+                    if(list[5].toInt()==1){
+                        resultMatrix[list[0].toInt()-1][list[1].toInt()-1]=list[4].toFloat()
+
+                        availableClients.add(this@Client)
+
+                        CoroutineScope(Dispatchers.Default).launch{
+
+                            var testClient = getAvailableClient().await()
+
+                            //Проверка другим клиентом значения
+                            while(testClient==this@Client){
+                                availableClients.add(testClient)
+                                delay(100)
+                                testClient = getAvailableClient().await()
+                            }
+                            testClient.sendData(list[0]+";"+list[1]+";"+list[2]+";"+list[3]+";"+"1")
+
+                        }
+                    }
+                    else{
+                        if(list[5].toInt()==2){
+                            //если значения не равны, то второе значение нигде не сохраняется
+                                // Доверяюсь тому, что третий раз точно правильно посчитает
+                                    // Может попастся тот же клиент, что и считал в 1 раз
+                            if(resultMatrix[list[0].toInt()-1][list[1].toInt()-1]!=list[4].toFloat()){
+                                availableClients.add(this@Client)
+                                CoroutineScope(Dispatchers.Default).launch{
+                                    val testClient = getAvailableClient().await()
+                                    testClient.sendData(list[0]+";"+list[1]+";"+list[2]+";"+list[3]+";"+"2")
+                                }
+                            }else{
+                                availableClients.add(this@Client)
+                            }
+                        }
+                        //считаю что в 3 раз получаем уже правильное значение
+                        if(list[5].toInt()==3){
+                            availableClients.add(this@Client)
+                            resultMatrix[list[0].toInt()-1][list[1].toInt()-1]=list[4].toFloat()
                         }
                     }
                 }
@@ -38,186 +79,19 @@ class Server(val port : Int=5804) {
         }
 
         /**
+         * Функция отправки информации
+         * data- информация
+         */
+        fun sendData(data : String){
+            this.sock?.sendData(data)
+        }
+
+        /**
          * Остановка всех подключений
          */
         fun stop(){
             sock?.stop()
         }
-    }
-
-    inner class DBHelper(
-        val dbName : String,
-        val address : String = "localhost",
-        val port : Int = 3306,
-        val user : String = "root",
-        val password : String = "root"
-    ){
-        private var connection : Connection?=null
-        private var statement: Statement? = null
-
-        /**
-         * Метод создания базы данных с указанием файла, где есть sql-запросы
-         * @param userdata - имя файла с запросами бд
-         */
-        fun createDatabase(userdata : String){
-            connect()
-            dropAllTables()
-            createTablesFromDump(userdata)
-        }
-
-        /**
-         * Метод подключения к бд  $dbName
-         * Обращение к субд через statement (sql запросы)
-         */
-        private fun connect(){
-            statement?.run{
-                if (!isClosed) close()
-            }
-            var rep = 0
-            do {
-                try {
-                    connection =
-                        DriverManager.getConnection("jdbc:mysql://$address:$port/$dbName?serverTimezone=UTC",
-                            user,
-                            password
-                        )
-                    statement =
-                        DriverManager.getConnection("jdbc:mysql://$address:$port/$dbName?serverTimezone=UTC",
-                            user,
-                            password
-                        ).createStatement()
-                } catch (e: SQLSyntaxErrorException) {
-                    println("Ошибка подключения к бд ${dbName} : \n${e.toString()}")
-                    println("Попытка создания бд ${dbName}")
-                    val tstmt =
-                        DriverManager.getConnection("jdbc:mysql://$address:$port/?serverTimezone=UTC", user, password)
-                            .createStatement()
-                    tstmt.execute("CREATE SCHEMA `$dbName`")
-                    tstmt.closeOnCompletion()
-                    rep++
-                }
-            } while (statement == null && rep < 2)
-        }
-
-        /**
-         * Метод для удаления таблиц,если они есть в бд
-         */
-        private fun dropAllTables(){
-            println("Удаление всех таблиц в базе данных...")
-            statement?.execute("DROP TABLE if exists `data`")
-            println("Все таблицы удалены.")
-        }
-
-        /**
-         * Создание таблиц через готовые sql запросы в файле
-         * @param userdata - название файла
-         */
-        private fun createTablesFromDump(userdata : String){
-            println("Создание структуры базы данных из дампа...")
-            try {
-                var query = ""
-                File(userdata).forEachLine {
-                    if(!it.startsWith("--") && it.isNotEmpty()){
-                        query += it
-                        if (it.endsWith(';')) {
-                            statement?.addBatch(query)
-                            query = ""
-                        }
-                    }
-                }
-                statement?.executeBatch()
-                println("Структура базы данных успешно создана.")
-            }
-            catch (e: SQLException){
-                println(e.message)
-            }
-            catch (e: Exception){
-                println(e.message)
-            }
-        }
-
-        /**
-         * Метод закрытия подключения.утверждения
-         */
-        fun disconnect() {
-            statement?.close()
-        }
-
-        /**
-         * Метод заполнения таблицы через insert into, в каждое поле кортежа записываются данные
-         * в формате "$name", где name - значение типа string, СУБД преобразует varchar в нужные форматы полей
-         * @param userdata - название таблицы
-         */
-        fun fillTableFromCsv(userdata : String){
-            val validData = userdata.split(".csv")
-            println("Заполнение данными таблицы ${validData[0]}...")
-            try{
-                val bufferedData = File("data/"+validData[0]+".csv").bufferedReader()
-                val requestTemplate = "INSERT INTO `${validData[0]}`" +
-                        "("+ getDataFromTable(validData[0]) +") VALUES "
-                while(bufferedData.ready()){
-                    var request = "$requestTemplate("
-                    val data = bufferedData.readLine().split(';')
-                    data.forEachIndexed { i, name ->
-                        request += "\"$name\""
-                        if(i<data.size -1) request+=','
-                    }
-                    request+=')'
-                    statement?.addBatch(request)
-                }
-                statement?.executeBatch()
-                statement?.clearBatch()
-                println("Таблица ${validData[0]} успешно заполнена!")
-            } catch(e: Exception){
-                println(e.toString())
-            }
-
-        }
-        /**
-         * Метод выдает данные из таблиц в субд (реализованно название атрибутов таблицы, закоментирован код для доставания типов атрибутов таблицы)
-         * @param userdata название таблицы
-         */
-        private fun getDataFromTable(userdata : String): String{
-            val query = "SHOW COLUMNS FROM `${userdata}`"
-            val resultSet = statement?.executeQuery(query)
-            var resultData = ""
-            if (resultSet != null){
-                //get column name
-                while (resultSet.next()){
-                    resultData+= "`"+resultSet.getString(1)+"` ,"
-                }
-                resultData= resultData.substring(0,(resultData.length)-2)
-                /*
-                if(columnName){
-                    //get column name
-                    while (resultSet.next()){
-                        resultData+= "`"+resultSet.getString(1)+"` ,"
-                    }
-                    resultData= resultData.substring(0,(resultData.length)-4)
-                }
-                else {
-                    //get type of column ( Not Worked now )
-                    while (resultSet.next()){
-                        val currentField = resultSet.getString(1)
-                        val validField = currentField.split("(")
-                        println(validField)
-                        println(map.get(validField[0]))
-                        resultData+= map.get(validField[0])
-                    }
-                }
-                 */
-            }
-            return resultData
-        }
-
-        fun getQuery(sql : String){
-            val rs =statement?.executeQuery(sql)
-            while(rs?.next()==true){
-                //сбор в матрицу
-                println(rs.getString(1)+";"+rs.getString(2)+";"+rs.getString(3)+";"+rs.getString(4))
-            }
-        }
-
     }
 
     init{
@@ -240,25 +114,158 @@ class Server(val port : Int=5804) {
     }
 
     /**
+     * Не блокирует основной процесс а выполняется отдельно, не требует создание потока
+     * @param table - название таблицы, где лежат матрицы для вычислений
+     * @param dataBase - название базы данных, где лежит таблица
+     */
+    private fun clientWait(table:String,dataBase: DBHelper)=CoroutineScope(Dispatchers.Default).launch {
+        try {
+            while (!stop) {
+                val sock=sSocket.accept()
+                val Client = Client(sock)
+                Client.startDialog()
+                clients.add(Client)
+                availableClients.add(Client)
+                //Когда клиентов больше двух, можно начать вычисления
+                if(clients.count()>=2){
+                    Calculate(table,dataBase)
+                }
+            }
+        } catch (e: Exception) {
+            println("${e.message}")
+        } finally {
+            stopAllClient()
+            sSocket.close()
+            println("Сервер остановлен")
+        }
+    }
+    /**
      * Старт сервера
      * Сервер постоянно ждет новых подключений к нему
+     * @param table - название таблицы с матрицами
+     * @param dataBase - База данных,где лежит таблица
      */
-    fun start(){
+    fun start(table : String,dataBase : DBHelper){
         stop=false
-        thread{
-            try{
-                while(!stop){
-                    clients.add(Client(sSocket.accept()).also{client->client.startDialog()})
+        clientWait(table,dataBase)
+    }
+
+    /**
+     * Коррутинная функция для получения свободных клиентов
+     */
+    private fun getAvailableClient()=CoroutineScope(Dispatchers.Default).async{
+        while(availableClients.size==0){
+            delay(100)
+        }
+        val availableCLient = availableClients.last()
+        availableClients.remove(availableCLient)
+        availableCLient
+    }
+
+    /**
+     * Вычисления матриц
+     * @param table - название таблицы в которой лежат матрицы
+     * @param dataBase - название базы данных в которой лежит таблица
+     */
+    private fun Calculate(table : String,dataBase : DBHelper){
+        //Если вычисления начались, то нет смысла делать их еще раз
+        if (!calculating){
+            calculating=true
+
+            CoroutineScope(Dispatchers.Default).launch{
+
+                val matrixCount = dataBase.getDataFromTable(table,"Max(`id`)","`row`",1)[0].toInt()
+                for (i in 1..(matrixCount-1)){
+
+                    println("Multiply ${i} and ${i+1}")
+                    //Перемножение всех таблиц в базе данных
+                    Multiply(table,dataBase,i,i+1)
+
+                    // Отправка полученной матрицы базе данных
+                    CoroutineScope(Dispatchers.Default).launch {
+                        while(availableClients.size!=clients.size){
+                            delay(100)
+                        }
+                        //delay(1000)
+
+                        //Заполнение бдшки значениями resultMatrix
+                        val currentMatrix= matrixCount+i
+                        val queryTemplate = "INSERT INTO `${table}` VALUES"
+                        var query=queryTemplate
+                        for(j in 1..resultMatrix.size){
+                            for( k in 1.. resultMatrix[j-1].size){
+                                val value = resultMatrix[j-1][k-1]
+                                query += "("+currentMatrix+","+j+","+k+","+value+"),"
+                            }
+                        }
+                        query=query.substring(0,query.length-1)
+                        dataBase.ExecuteQueryWithoutCheck(query)
+                        println("Success with ${i} and ${i+1}")
+                    }
                 }
-            }catch (e: Exception){
-                println("${e.message}")
             }
-            finally {
-                stopAllClient()
-                sSocket.close()
-                println("Сервер остановлен")
+        }
+    }
+
+
+    /**
+     * Приостанавливаемая функция перемножения матриц
+     * @param table - таблица с матрицами
+     * @param dataBase - База данных с матрицами
+     * @param first - первая матрица
+     * @param second - вторая матрица
+     */
+    suspend fun Multiply(table : String, dataBase : DBHelper, first : Int, second : Int){
+
+        //Доставать "value" так не правильно.. можно узнать как называются поля table
+        val mtr1list = dataBase.getDataFromTable(table,"value","id",first)
+        val row1mtr = dataBase.getDataFromTable(table,"Max(`row`)","id",first)[0].toInt()
+        val col1mtr = mtr1list.count()/row1mtr
+
+        //заполнение первой матрицы значениями из бд
+        val matrix1= mutableListOf<List<Float>>()
+        for (i in 0..row1mtr-1 ){
+            val vector= mutableListOf<Float>()
+            for ( j in 0..col1mtr-1){
+                vector.add(mtr1list[col1mtr*i+j])
             }
+            matrix1.add(vector)
 
         }
+
+        val mtr2list = dataBase.getDataFromTable(table,"value","id",second)
+        val row2mtr = dataBase.getDataFromTable(table,"Max(`row`)","id",second)[0].toInt()
+        val col2mtr = mtr2list.count()/row2mtr
+
+        val matrix2= mutableListOf<List<Float>>()
+        for (i in 0..row2mtr-1 ){
+            val vector= mutableListOf<Float>()
+            for ( j in 0..col2mtr-1){
+                //сразу транспонированная
+                vector.add(mtr2list[row1mtr*j+i])
+            }
+            matrix2.add(vector)
+        }
+
+        //заполнение результирующей матрицы нулями
+        //нужна для хранения значений
+        for(i in 1..row1mtr){
+            val vector= mutableListOf<Float>()
+            for (j in 1..col2mtr){
+                vector.add(0.0F)
+            }
+            resultMatrix.add(ArrayList(vector))
+        }
+
+        //проверка на возможность умножения размеров матриц
+        if (col1mtr==row2mtr){
+            for( i in 1..col1mtr){
+                for( j in 1..row2mtr){
+                    val availableClient=getAvailableClient().await()
+                    availableClient.sendData(i.toString()+";"+j.toString()+";"+matrix1[i-1]+";"+matrix2[j-1]+";"+"0")
+                }
+            }
+        }
+
     }
 }
