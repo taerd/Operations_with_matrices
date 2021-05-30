@@ -9,5 +9,6 @@
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="library" name="KotlinJavaRuntime" level="project" />
     <orderEntry type="module" module-name="Communication" />
+    <orderEntry type="library" name="org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.5.0" level="project" />
   </component>
 </module>
