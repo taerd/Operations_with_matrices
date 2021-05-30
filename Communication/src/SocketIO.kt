@@ -1,3 +1,6 @@
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -28,7 +31,6 @@ class SocketIO(val socket : Socket) {
     fun removeDataListener(l:(String)->Unit){
         DataListener.remove(l)
     }
-
 
     /**
      * Принудительный разрыв соедения
