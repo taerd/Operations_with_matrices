@@ -11,6 +11,10 @@ class Server(val port : Int=5804) {
     private var resultMatrix=mutableListOf<ArrayList<Float>>()
     private var stop=false
     private var calculating=false
+    private var fill = true
+
+    private var table= ""
+    private lateinit var dataBase : DBHelper
 
     /** Вложенный класс клиентов, чтобы сервер хранил 'копии' подключенных клиентов
      * и взаимодействовал с подключенными клиентами
@@ -30,13 +34,16 @@ class Server(val port : Int=5804) {
 
                 addDataListener{
                     val list = it.split(";")
-
+                    //println(it)
                     //Проверка
                     //1;1;[3.0, 5.0, 3.0];[6.0, 8.0, 9.0];result;iter
                     if(list[5].toInt()==1){
                         resultMatrix[list[0].toInt()-1][list[1].toInt()-1]=list[4].toFloat()
 
-                        availableClients.add(this@Client)
+                        synchronized(availableClients){
+                            availableClients.add(this@Client)
+                        }
+
 
                         CoroutineScope(Dispatchers.Default).launch{
 
@@ -44,12 +51,19 @@ class Server(val port : Int=5804) {
 
                             //Проверка другим клиентом значения
                             while(testClient==this@Client){
-                                availableClients.add(testClient)
-                                delay(100)
-                                testClient = getAvailableClient().await()
-                            }
-                            testClient.sendData(list[0]+";"+list[1]+";"+list[2]+";"+list[3]+";"+"1")
+                                synchronized(availableClients){
+                                    availableClients.add(this@Client)
+                                }
 
+                                testClient = getAvailableClient().await()
+
+                            }
+                            try{
+                                testClient.sendData(list[0]+";"+list[1]+";"+list[2]+";"+list[3]+";"+"1")
+                            }
+                            catch(e:Exception){
+                                println(e.message)
+                            }
                         }
                     }
                     else{
@@ -58,18 +72,26 @@ class Server(val port : Int=5804) {
                                 // Доверяюсь тому, что третий раз точно правильно посчитает
                                     // Может попастся тот же клиент, что и считал в 1 раз
                             if(resultMatrix[list[0].toInt()-1][list[1].toInt()-1]!=list[4].toFloat()){
-                                availableClients.add(this@Client)
+                                synchronized(availableClients){
+                                    availableClients.add(this@Client)
+                                }
+
                                 CoroutineScope(Dispatchers.Default).launch{
+
                                     val testClient = getAvailableClient().await()
                                     testClient.sendData(list[0]+";"+list[1]+";"+list[2]+";"+list[3]+";"+"2")
                                 }
                             }else{
-                                availableClients.add(this@Client)
+                                synchronized(availableClients){
+                                    availableClients.add(this@Client)
+                                }
                             }
                         }
                         //считаю что в 3 раз получаем уже правильное значение
                         if(list[5].toInt()==3){
-                            availableClients.add(this@Client)
+                            synchronized(availableClients){
+                                availableClients.add(this@Client)
+                            }
                             resultMatrix[list[0].toInt()-1][list[1].toInt()-1]=list[4].toFloat()
                         }
                     }
@@ -92,6 +114,7 @@ class Server(val port : Int=5804) {
         fun stop(){
             sock?.stop()
         }
+        init{}
     }
 
     init{
@@ -118,7 +141,7 @@ class Server(val port : Int=5804) {
      * @param table - название таблицы, где лежат матрицы для вычислений
      * @param dataBase - название базы данных, где лежит таблица
      */
-    private fun clientWait(table:String,dataBase: DBHelper)=CoroutineScope(Dispatchers.Default).launch {
+    private fun clientWait()=CoroutineScope(Dispatchers.Default).launch {
         try {
             while (!stop) {
                 val sock=sSocket.accept()
@@ -128,7 +151,7 @@ class Server(val port : Int=5804) {
                 availableClients.add(Client)
                 //Когда клиентов больше двух, можно начать вычисления
                 if(clients.count()>=2){
-                    Calculate(table,dataBase)
+                    Calculate()
                 }
             }
         } catch (e: Exception) {
@@ -145,29 +168,41 @@ class Server(val port : Int=5804) {
      * @param table - название таблицы с матрицами
      * @param dataBase - База данных,где лежит таблица
      */
-    fun start(table : String,dataBase : DBHelper){
+    fun start(tbl : String,db : DBHelper){
         stop=false
-        clientWait(table,dataBase)
+        table=tbl
+        dataBase = db
+        clientWait()
     }
 
     /**
      * Коррутинная функция для получения свободных клиентов
      */
     private fun getAvailableClient()=CoroutineScope(Dispatchers.Default).async{
+        var at: Client
         while(availableClients.size==0){
-            delay(100)
+            delay(5)
         }
-        val availableCLient = availableClients.last()
-        availableClients.remove(availableCLient)
-        availableCLient
+
+        //использовать channel вместо mutableList
+        //или использовать mutex lock/unlock
+        //Успевают взять до того
+        synchronized(availableClients){
+            at = availableClients.last()
+            availableClients.remove(at)
+        }
+        val availableClient = at
+        availableClient
     }
 
+
+    private var next= false
     /**
      * Вычисления матриц
      * @param table - название таблицы в которой лежат матрицы
      * @param dataBase - название базы данных в которой лежит таблица
      */
-    private fun Calculate(table : String,dataBase : DBHelper){
+    private fun Calculate(){
         //Если вычисления начались, то нет смысла делать их еще раз
         if (!calculating){
             calculating=true
@@ -178,16 +213,16 @@ class Server(val port : Int=5804) {
                 for (i in 1..(matrixCount-1)){
 
                     println("Multiply ${i} and ${i+1}")
+                    next=false
                     //Перемножение всех таблиц в базе данных
-                    Multiply(table,dataBase,i,i+1)
+                    Multiply(i,i+1)
 
                     // Отправка полученной матрицы базе данных
                     CoroutineScope(Dispatchers.Default).launch {
+                        //проверка конца вычислений
                         while(availableClients.size!=clients.size){
-                            delay(100)
+                            delay(1000)
                         }
-                        //delay(1000)
-
                         //Заполнение бдшки значениями resultMatrix
                         val currentMatrix= matrixCount+i
                         val queryTemplate = "INSERT INTO `${table}` VALUES"
@@ -198,9 +233,16 @@ class Server(val port : Int=5804) {
                                 query += "("+currentMatrix+","+j+","+k+","+value+"),"
                             }
                         }
+                        resultMatrix
                         query=query.substring(0,query.length-1)
                         dataBase.ExecuteQueryWithoutCheck(query)
-                        println("Success with ${i} and ${i+1}")
+                        println("Success  with ${i} * ${i+1} at ${currentMatrix}")
+                        next=true
+                    }
+
+                    //Ожидание пока матрица отправится бдшке
+                    while(!next){
+                        delay(100)
                     }
                 }
             }
@@ -215,7 +257,7 @@ class Server(val port : Int=5804) {
      * @param first - первая матрица
      * @param second - вторая матрица
      */
-    suspend fun Multiply(table : String, dataBase : DBHelper, first : Int, second : Int){
+    suspend fun Multiply(first : Int, second : Int){
 
         //Доставать "value" так не правильно.. можно узнать как называются поля table
         val mtr1list = dataBase.getDataFromTable(table,"value","id",first)
@@ -249,6 +291,7 @@ class Server(val port : Int=5804) {
 
         //заполнение результирующей матрицы нулями
         //нужна для хранения значений
+        resultMatrix.clear()
         for(i in 1..row1mtr){
             val vector= mutableListOf<Float>()
             for (j in 1..col2mtr){
@@ -261,6 +304,8 @@ class Server(val port : Int=5804) {
         if (col1mtr==row2mtr){
             for( i in 1..col1mtr){
                 for( j in 1..row2mtr){
+                    //нужна задержка чтобы корутины не крашились в пустом листе availableClients
+                    delay(4)
                     val availableClient=getAvailableClient().await()
                     availableClient.sendData(i.toString()+";"+j.toString()+";"+matrix1[i-1]+";"+matrix2[j-1]+";"+"0")
                 }
