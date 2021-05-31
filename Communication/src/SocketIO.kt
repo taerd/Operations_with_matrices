@@ -1,6 +1,7 @@
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -44,7 +45,7 @@ class SocketIO(val socket : Socket) {
     /**
      * Функция обработки полученной информации
      */
-    fun startDataReceiving() {
+    fun startDataReceiving(){
         stop=false
         thread{
             try {
