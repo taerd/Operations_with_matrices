@@ -132,6 +132,37 @@ class DBHelper (
     }
 
     /**
+     * Заполнение таблицы из csv файла одним запросом
+     * @param userdata - название файла
+     */
+    fun fillTableFromCsvOneExecute(userdata: String){
+        val validData = userdata.split(".csv")
+        println("Заполнение данными таблицы ${validData[0]}...")
+        try{
+            var request = ""
+            val bufferedData = File("data/"+validData[0]+".csv").bufferedReader()
+            val requestTemplate = "INSERT INTO `${validData[0]}`" +
+                    "("+ getDataFromTable(validData[0]) +") VALUES "
+            request = "$requestTemplate("
+            while(bufferedData.ready()){
+                val data = bufferedData.readLine().split(';')
+                data.forEachIndexed { i, name ->
+                    request += "\"$name\""
+                    if(i<data.size -1) request+=','
+                }
+                request+="),("
+                //statement?.addBatch(request)
+            }
+            request = request.substring(0,request.length-2)
+            statement?.executeUpdate(request)
+            //statement?.clearBatch()
+            println("Таблица ${validData[0]} успешно заполнена!")
+        } catch(e: Exception){
+            println(e.toString())
+        }
+    }
+
+    /**
      * Метод выдает данные из таблиц в субд (реализованно название атрибутов таблицы, закоментирован код для доставания типов атрибутов таблицы)
      * @param userdata название таблицы
      */
