@@ -4,15 +4,14 @@ import kotlin.random.Random
 
 
 fun main(){
-    //GenerateThreeFloatMatrix(25,25,25,25)
-
+    //GenerateThreeFloatMatrix(100,100,100,100)
 
     val s = Server()
 
     val db = DBHelper("matrix")
     db.createDatabase("matrix")
+    db.fillTableFromCsvOneExecute("data.csv")
     //db.fillTableFromCsv("data.csv")
-    db.fillTableFromCsv("data.csv")
 
 
     s.start("data",db)
@@ -24,7 +23,6 @@ fun main(){
         cmd=sc.nextLine()
     }while (cmd!="STOP")
     s.stop()
-
 }
 public fun GenerateTwoFloatMatrix(n1:Int,k:Int,m2:Int){
     val writer = File("data/data.csv").bufferedWriter()
