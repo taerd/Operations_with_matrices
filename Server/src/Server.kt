@@ -1,4 +1,5 @@
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -7,11 +8,11 @@ class Server(val port : Int=5804) {
 
     private val sSocket: ServerSocket
     private val clients= mutableListOf<Client>()
-    private val availableClients= mutableListOf<Client>()
+    private val maxClients = 24
+    private val availableClients= Channel<Client>(maxClients)
     private var resultMatrix=mutableListOf<ArrayList<Float>>()
     private var stop=false
     private var calculating=false
-    private var fill = true
 
     private var table= ""
     private lateinit var dataBase : DBHelper
@@ -40,30 +41,17 @@ class Server(val port : Int=5804) {
                     if(list[5].toInt()==1){
                         resultMatrix[list[0].toInt()-1][list[1].toInt()-1]=list[4].toFloat()
 
-                        synchronized(availableClients){
-                            availableClients.add(this@Client)
-                        }
-
-
                         CoroutineScope(Dispatchers.Default).launch{
+                            availableClients.send(this@Client)
 
                             var testClient = getAvailableClient().await()
-
                             //Проверка другим клиентом значения
-                            while(testClient==this@Client){
-                                synchronized(availableClients){
-                                    availableClients.add(this@Client)
-                                }
-
+                            while(testClient==this@Client) {
+                                availableClients.send(testClient)
+                                delay(10)
                                 testClient = getAvailableClient().await()
-
                             }
-                            try{
-                                testClient.sendData(list[0]+";"+list[1]+";"+list[2]+";"+list[3]+";"+"1")
-                            }
-                            catch(e:Exception){
-                                println(e.message)
-                            }
+                            testClient.sendData(list[0]+";"+list[1]+";"+list[2]+";"+list[3]+";"+"1")
                         }
                     }
                     else{
@@ -72,25 +60,22 @@ class Server(val port : Int=5804) {
                                 // Доверяюсь тому, что третий раз точно правильно посчитает
                                     // Может попастся тот же клиент, что и считал в 1 раз
                             if(resultMatrix[list[0].toInt()-1][list[1].toInt()-1]!=list[4].toFloat()){
-                                synchronized(availableClients){
-                                    availableClients.add(this@Client)
-                                }
 
                                 CoroutineScope(Dispatchers.Default).launch{
-
+                                    availableClients.send(this@Client)
                                     val testClient = getAvailableClient().await()
                                     testClient.sendData(list[0]+";"+list[1]+";"+list[2]+";"+list[3]+";"+"2")
                                 }
                             }else{
-                                synchronized(availableClients){
-                                    availableClients.add(this@Client)
+                                CoroutineScope(Dispatchers.Default).launch{
+                                availableClients.send(this@Client)
                                 }
                             }
                         }
                         //считаю что в 3 раз получаем уже правильное значение
                         if(list[5].toInt()==3){
-                            synchronized(availableClients){
-                                availableClients.add(this@Client)
+                            CoroutineScope(Dispatchers.Default).launch{
+                                availableClients.send(this@Client)
                             }
                             resultMatrix[list[0].toInt()-1][list[1].toInt()-1]=list[4].toFloat()
                         }
@@ -148,7 +133,7 @@ class Server(val port : Int=5804) {
                 val Client = Client(sock)
                 Client.startDialog()
                 clients.add(Client)
-                availableClients.add(Client)
+                availableClients.send(Client)
                 //Когда клиентов больше двух, можно начать вычисления
                 if(clients.count()>=2){
                     Calculate()
@@ -179,20 +164,8 @@ class Server(val port : Int=5804) {
      * Коррутинная функция для получения свободных клиентов
      */
     private fun getAvailableClient()=CoroutineScope(Dispatchers.Default).async{
-        var at: Client
-        while(availableClients.size==0){
-            delay(5)
-        }
-
-        //использовать channel вместо mutableList
-        //или использовать mutex lock/unlock
-        //Успевают взять до того
-        synchronized(availableClients){
-            at = availableClients.last()
-            availableClients.remove(at)
-        }
-        val availableClient = at
-        availableClient
+        val avC = availableClients.receive()
+        avC
     }
 
 
@@ -205,6 +178,7 @@ class Server(val port : Int=5804) {
     private fun Calculate(){
         //Если вычисления начались, то нет смысла делать их еще раз
         if (!calculating){
+            println("Starting calculate")
             calculating=true
 
             CoroutineScope(Dispatchers.Default).launch{
@@ -220,9 +194,11 @@ class Server(val port : Int=5804) {
                     // Отправка полученной матрицы базе данных
                     CoroutineScope(Dispatchers.Default).launch {
                         //проверка конца вычислений
-                        while(availableClients.size!=clients.size){
-                            delay(1000)
+                        //по количеству свободных клиентов - должно совпасть с количеством клиентов
+                        while(availableClients.toString().split("size=")[1].split(')')[0].toInt()!=clients.size){
+                            delay(500)
                         }
+
                         //Заполнение бдшки значениями resultMatrix
                         val currentMatrix= matrixCount+i
                         val queryTemplate = "INSERT INTO `${table}` VALUES"
@@ -244,6 +220,7 @@ class Server(val port : Int=5804) {
                     while(!next){
                         delay(100)
                     }
+
                 }
             }
         }
@@ -304,8 +281,6 @@ class Server(val port : Int=5804) {
         if (col1mtr==row2mtr){
             for( i in 1..col1mtr){
                 for( j in 1..row2mtr){
-                    //нужна задержка чтобы корутины не крашились в пустом листе availableClients
-                    delay(4)
                     val availableClient=getAvailableClient().await()
                     availableClient.sendData(i.toString()+";"+j.toString()+";"+matrix1[i-1]+";"+matrix2[j-1]+";"+"0")
                 }
